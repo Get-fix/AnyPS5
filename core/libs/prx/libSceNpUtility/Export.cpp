@@ -5,6 +5,7 @@
 
 static constexpr int SCE_NP_ERROR_INVALID_ARGUMENT = static_cast<int>(0x80550003);
 static constexpr int SCE_NP_ERROR_SIGNED_OUT = static_cast<int>(0x80550006);
+static constexpr int SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT = static_cast<int>(0x8055070C);
 
 extern "C" {
 
@@ -51,9 +52,9 @@ int APS5_VABI sceNpLookupCreateRequest() {
     return 0;
 }
 
-int APS5_VABI sceNpLookupCreateTitleCtx() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpLookupCreateTitleCtx(const NpId* self_np_id) {
+    if (!self_np_id) return SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
+    return SCE_NP_ERROR_SIGNED_OUT;
 }
 
 int APS5_VABI sceNpLookupDeleteRequest() {
@@ -112,6 +113,21 @@ int APS5_VABI sceNpWordFilterPollAsync() {
 }
 
 int APS5_VABI sceNpWordFilterSanitizeComment() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpLookupAbortRequest(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpLookupCreateAsyncRequest(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpLookupPollAsync(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

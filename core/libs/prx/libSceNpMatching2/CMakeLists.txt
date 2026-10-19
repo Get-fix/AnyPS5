@@ -1,0 +1,21 @@
+add_library(libSceNpMatching2 SHARED EXCLUDE_FROM_ALL Export.cpp)
+target_include_directories(libSceNpMatching2 PRIVATE ${LIBS_INCLUDE_DIR})
+configure_windows_unwind(libSceNpMatching2)
+
+if(MINGW)
+    foreach(runtimeLinkFlag IN ITEMS -static-libgcc -static-libstdc++ -static)
+        string(REPLACE "${runtimeLinkFlag}" "" CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
+    endforeach()
+endif()
+
+if(BUILD_TESTING)
+    add_test_executable(guest_np_ps4_imports_tests ${LIBS_INCLUDE_DIR}/tests/GuestNpPs4Imports.cpp)
+    target_include_directories(guest_np_ps4_imports_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_np_ps4_imports_tests PRIVATE libSceNpCommon libSceNpMatching2 libSceNpSignaling libSceNpUtility libc)
+    configure_windows_unwind(guest_np_ps4_imports_tests)
+    add_test(NAME guest_np_ps4_imports COMMAND guest_np_ps4_imports_tests)
+    if(WIN32)
+        set_tests_properties(guest_np_ps4_imports PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceNpMatching2>")
+    endif()
+endif()
