@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
@@ -126,8 +127,13 @@ int CheckSubmission(std::uint32_t count, std::uint32_t* const* dcbs, const std::
 
 std::span<const std::uint32_t> PacketAt(std::span<const std::uint32_t> words, std::size_t at, const char* stream) {
     const auto header = words[at];
-    if ((header >> 30) != 3) throw std::runtime_error(std::string("GnmDriver: unsupported PM4 packet type in the ") + stream);
-    const std::size_t total = ((header >> 16) & 0x3fffu) + 2;
+    const auto type = header >> 30;
+    if (type == 1) {
+        char what[160];
+        std::snprintf(what, sizeof(what), "GnmDriver: unsupported PM4 packet type 1 in the %s: header 0x%08x at dword %zu of %zu", stream, header, at, words.size());
+        throw std::runtime_error(what);
+    }
+    const std::size_t total = type == 2 ? 1 : ((header >> 16) & 0x3fffu) + 2;
     if (total > words.size() - at) throw std::runtime_error(std::string("GnmDriver: truncated packet in the ") + stream);
     return words.subspan(at, total);
 }
@@ -184,6 +190,7 @@ std::vector<std::uint32_t> MergeEngines(std::span<const std::uint32_t> dcb, std:
         while (constant < ccb.size() && !(untilAhead && g_constantCounter > g_drawCounter)) {
             const auto packet = PacketAt(ccb, constant, "constant command buffer");
             constant += packet.size();
+            if ((packet[0] >> 30) != 3) continue;
             switch (Opcode(packet[0])) {
                 case OpIncrementCeCounter:
                     ++g_constantCounter;
@@ -203,6 +210,7 @@ std::vector<std::uint32_t> MergeEngines(std::span<const std::uint32_t> dcb, std:
     for (std::size_t draw = 0; draw < dcb.size();) {
         const auto packet = PacketAt(dcb, draw, "draw command buffer");
         draw += packet.size();
+        if ((packet[0] >> 30) != 3) continue;
         switch (Opcode(packet[0])) {
             case OpWaitOnCeCounter:
                 runConstant(true);
