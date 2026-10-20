@@ -9,6 +9,7 @@
 
 extern "C" {
 int APS5_VABI sceNpCmpOnlineId(const NpOnlineId* first, const NpOnlineId* second);
+int APS5_VABI sceNpCmpNpId(const NpId* first, const NpId* second);
 int APS5_VABI sceNpMatching2Initialize(const void* param);
 int APS5_VABI sceNpMatching2Terminate(void);
 int APS5_VABI sceNpMatching2AbortContextStart(void);
@@ -75,6 +76,26 @@ void CheckOnlineIds() {
     Require(sceNpCmpOnlineId(nullptr, &first) == NpInvalidArgument && sceNpCmpOnlineId(&first, nullptr) == NpInvalidArgument, "a null online id was compared");
 }
 
+void CheckNpIds() {
+    NpId first{};
+    first.online_id = OnlineId("player-one");
+    first.opt[0] = 1;
+    first.reserved[7] = 2;
+    auto same = first;
+    same.online_id.data[16] = 'x';
+    Require(sceNpCmpNpId(&first, &same) == 0, "NpIds that differ only past 16 online id characters do not match");
+    auto other = first;
+    other.online_id = OnlineId("player-two");
+    Require(sceNpCmpNpId(&first, &other) == NpUtilNotMatch, "NpIds with different online ids match");
+    auto opt = first;
+    opt.opt[7] = 3;
+    Require(sceNpCmpNpId(&first, &opt) == NpUtilNotMatch, "NpIds with different opt bytes match");
+    auto reserved = first;
+    reserved.reserved[0] = 4;
+    Require(sceNpCmpNpId(&first, &reserved) == NpUtilNotMatch, "NpIds with different reserved bytes match");
+    Require(sceNpCmpNpId(nullptr, &first) == NpInvalidArgument && sceNpCmpNpId(&first, nullptr) == NpInvalidArgument, "a null NpId was compared");
+}
+
 void CheckMatching2() {
     unsigned char param[0x30]{};
     const auto setSize = [&](std::uint64_t size) { std::memcpy(param + 0x20, &size, sizeof(size)); };
@@ -118,6 +139,7 @@ void CheckLookup() {
 
 int main() {
     CheckOnlineIds();
+    CheckNpIds();
     CheckMatching2();
     CheckSignaling();
     CheckLookup();
