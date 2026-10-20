@@ -512,10 +512,10 @@ std::shared_ptr<const ShaderRecompiler::SourceHandle> SourceHandleFor(const Shad
     return handle;
 }
 
-ShaderRecompiler::RectListShaders PreparedRectangle(const ShaderSnapshot& snapshot, std::uint64_t vertexId, std::uint64_t fragmentId) {
+ShaderRecompiler::RectListShaders PreparedRectangle(const ShaderSnapshot& snapshot, std::uint64_t vertexId, std::uint64_t fragmentId, bool quad) {
     std::lock_guard lock(snapshot.prepared->mutex);
     for (const auto& entry : snapshot.prepared->rectangles) {
-        if (entry.vertexId == vertexId && entry.fragmentId == fragmentId) {
+        if (entry.vertexId == vertexId && entry.fragmentId == fragmentId && entry.quad == quad) {
             require(entry.shaders != nullptr, "prepared rectangle artifact is missing");
             return *entry.shaders;
         }
@@ -523,15 +523,15 @@ ShaderRecompiler::RectListShaders PreparedRectangle(const ShaderSnapshot& snapsh
     throw std::runtime_error("AGC driver: prepared rectangle artifacts are missing");
 }
 
-ShaderRecompiler::RectListShaders DrawRectangle(const ShaderSnapshot& front, const std::shared_ptr<const ShaderSnapshot>& fragment, std::uint64_t vertexId, std::uint64_t fragmentId, const ShaderRecompiler::SpirvTarget& target) {
+ShaderRecompiler::RectListShaders DrawRectangle(const ShaderSnapshot& front, const std::shared_ptr<const ShaderSnapshot>& fragment, std::uint64_t vertexId, std::uint64_t fragmentId, const ShaderRecompiler::SpirvTarget& target, bool quad) {
     const auto prepared = [&] {
         std::lock_guard lock(front.prepared->mutex);
-        return std::ranges::any_of(front.prepared->rectangles, [&](const auto& entry) { return entry.vertexId == vertexId && entry.fragmentId == fragmentId; });
+        return std::ranges::any_of(front.prepared->rectangles, [&](const auto& entry) { return entry.vertexId == vertexId && entry.fragmentId == fragmentId && entry.quad == quad; });
     };
-    if (prepared()) return PreparedRectangle(front, vertexId, fragmentId);
+    if (prepared()) return PreparedRectangle(front, vertexId, fragmentId, quad);
     APS5_LOG_ERR("Rect-list draw of shader 0x%llx has no rectangle for fragment shader 0x%llx; preparing it at draw", static_cast<unsigned long long>(front.codeAddress), static_cast<unsigned long long>(fragment->codeAddress));
-    ResolvePreparedGraphics(front, fragment, 17, target);
-    return PreparedRectangle(front, vertexId, fragmentId);
+    ResolvePreparedGraphics(front, fragment, quad ? 19u : 17u, target);
+    return PreparedRectangle(front, vertexId, fragmentId, quad);
 }
 
 namespace {
@@ -1393,7 +1393,7 @@ void ResolvePreparedGraphics(const ShaderSnapshot& front, const std::shared_ptr<
     {
         const auto& current = transaction.Read(front);
         const bool newFragment = fragment && !std::ranges::any_of(current.fragments, [&](const auto& entry) { return entry.lock() == fragment; });
-        const bool newRequest = !current.rectangleRequested && (primitiveType == 7 || primitiveType == 17);
+        const bool newRequest = !current.rectangleRequested && (primitiveType == 7 || primitiveType == 17 || primitiveType == 19);
         const bool expiredFragment = std::ranges::any_of(current.fragments, [](const auto& entry) { return entry.expired(); });
         if (newFragment || newRequest || expiredFragment) {
             auto& prepared = transaction.Edit(front);
@@ -1433,7 +1433,7 @@ void ResolvePreparedGraphics(const ShaderSnapshot& front, const std::shared_ptr<
                 ShaderRecompiler::RecompileResult fragmentResult;
                 static_cast<ShaderRecompiler::CompiledShaderArtifact&>(vertexResult) = vertexArtifact;
                 static_cast<ShaderRecompiler::CompiledShaderArtifact&>(fragmentResult) = fragmentArtifact;
-                rectangles.push_back({vertexArtifact.variantId, fragmentArtifact.variantId, std::make_shared<const ShaderRecompiler::RectListShaders>(ShaderRecompiler::BuildRectListShaders(vertexResult, fragmentResult, target))});
+                for (const bool quad : {false, true}) rectangles.push_back({vertexArtifact.variantId, fragmentArtifact.variantId, std::make_shared<const ShaderRecompiler::RectListShaders>(ShaderRecompiler::BuildRectListShaders(vertexResult, fragmentResult, target, quad)), quad});
             }
         }
         prepared.rectangles.insert(prepared.rectangles.end(), std::make_move_iterator(rectangles.begin()), std::make_move_iterator(rectangles.end()));

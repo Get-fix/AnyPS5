@@ -503,7 +503,7 @@ Module Inspect(const CompiledShader& compiled, const State& state, const VkPhysi
             } else if (geometry) {
                 Require(length->second == 3u, "geometry interface array must hold the three vertices of a triangle");
             } else {
-                const auto expected = state.rectList ? (control && input ? 3u : 4u) : control && input ? state.stages.tessellation->inputControlPoints : state.stages.tessellation->outputControlPoints;
+                const auto expected = state.rectList ? (control && input && !state.quadList ? 3u : 4u) : control && input ? state.stages.tessellation->inputControlPoints : state.stages.tessellation->outputControlPoints;
                 Require(length->second == expected, "tessellation interface array disagrees with control-point count");
             }
             typeId = outer[2];

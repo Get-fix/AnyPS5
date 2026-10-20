@@ -44,7 +44,7 @@ static_assert(sizeof(ShaderRecompiler::TessellationConfiguration) == 40, "Tessel
 constexpr std::uint32_t FileMagic = 0x4c4a5041u;
 // Bumped when the recipe codec, CanonicalPipelineState or the store key change in a way the
 // layout guards above do not catch (a field renumbered or reinterpreted at the same size).
-constexpr std::uint32_t FileFormat = 3u;
+constexpr std::uint32_t FileFormat = 4u;
 constexpr std::uint32_t ModuleRecord = 1u;
 constexpr std::uint32_t GraphicsRecord = 2u;
 constexpr std::uint32_t ComputeRecord = 3u;
@@ -200,6 +200,7 @@ void encodeState(Writer& writer, const State& state) {
     for (const auto value : state.blendConstants) writer.Raw(value);
     writer.Bool(state.hasColorTarget);
     writer.Bool(state.rectList);
+    writer.Bool(state.quadList);
     writer.Bool(state.dualSourceBlend);
     writer.U32(state.reversedBlend);
     writer.U32(static_cast<std::uint32_t>(state.topology));
@@ -258,6 +259,7 @@ void decodeState(Reader& reader, State& state) {
     for (auto& value : state.blendConstants) value = reader.Raw<float>();
     state.hasColorTarget = reader.Bool();
     state.rectList = reader.Bool();
+    state.quadList = reader.Bool();
     state.dualSourceBlend = reader.Bool();
     state.reversedBlend = reader.U32();
     state.topology = static_cast<VkPrimitiveTopology>(reader.U32());

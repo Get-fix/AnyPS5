@@ -5519,6 +5519,20 @@ void rectListTests() {
             state.rectList = false;
             expectFailure([&] { ValidateShaders(shaders, state, VkPhysicalDeviceSubgroupProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES}, false); }, "stage count");
         }
+        auto quadAuxiliary = BuildRectListShaders(vertex, fragment, target, true);
+        const std::array<CompiledShader, 4> quadShaders{{{ShaderStage::Vertex, &vertex, 0}, {ShaderStage::TessellationControl, &quadAuxiliary.control, 0}, {ShaderStage::TessellationEvaluation, &quadAuxiliary.evaluation, 0}, {ShaderStage::Fragment, &fragment, 0}}};
+        auto quadQueue = makeState();
+        quadQueue.userConfig[0x242] = 19;
+        quadQueue.context[0x205] = 3;
+        const auto quadState = DecodeState(quadQueue);
+        Require(quadState.rectList && quadState.quadList && quadState.topology == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST && quadState.cullMode == VK_CULL_MODE_NONE, "quad-list state was not decoded");
+        ValidateShaders(quadShaders, quadState, VkPhysicalDeviceSubgroupProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES}, false);
+        const std::array<CompiledShader, 4> rectShaders{{{ShaderStage::Vertex, &vertex, 0}, {ShaderStage::TessellationControl, &auxiliary.control, 0}, {ShaderStage::TessellationEvaluation, &auxiliary.evaluation, 0}, {ShaderStage::Fragment, &fragment, 0}}};
+        expectFailure([&] { ValidateShaders(rectShaders, quadState, VkPhysicalDeviceSubgroupProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES}, false); }, "control-point count");
+        quadQueue.context[0x205] = 3u | (1u << 19u);
+        Context lastVertex{};
+        lastVertex.provokingVertexLast = true;
+        expectFailure([&] { ValidateProvokingVertex(lastVertex, DecodeState(quadQueue)); }, "generated primitive pipelines");
     }
     vertex.spirv = makeModule({.parameterOutput = true});
     fragment.spirv = makeModule({.fragment = true, .rectParameters = true});
