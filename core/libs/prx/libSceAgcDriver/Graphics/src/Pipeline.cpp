@@ -513,7 +513,7 @@ Pipeline::Pipeline(const Context& context, const State& state, const VertexInput
         pipelineInfo.pStages = stages.data();
         VkPipelineTessellationStateCreateInfo tessellation{VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO};
         if (state.rectList || state.stages.tessellation) {
-            tessellation.patchControlPoints = state.rectList ? 3u : state.stages.tessellation->inputControlPoints;
+            tessellation.patchControlPoints = state.quadList ? 4u : state.rectList ? 3u : state.stages.tessellation->inputControlPoints;
             pipelineInfo.pTessellationState = &tessellation;
         }
         pipelineInfo.pVertexInputState = state.stages.mesh ? nullptr : &input;
@@ -828,6 +828,7 @@ void pipelineKey(std::vector<std::byte>& key, const Context& context, const Stat
     for (const auto word : resources.fragmentKey) append(key, word);
     append(key, state.hasColorTarget);
     append(key, state.rectList);
+    append(key, state.quadList);
     append(key, state.topology);
     append(key, state.primitiveRestart);
     append(key, state.cullMode);

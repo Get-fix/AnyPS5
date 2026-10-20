@@ -31,6 +31,7 @@ void require(bool condition, const char* message) {
 
 class RectListEmitter {
 public:
+    bool quads = false;
     RectListEmitter(const std::vector<Parameter>& parameters, spv::ExecutionModel model, std::uint32_t version, std::uint32_t faultBinding) : builder(version), faultBinding(faultBinding), version(version), parameters(parameters) {
         builder.AddMemoryModel(spv::AddressingModelLogical, spv::MemoryModelGLSL450);
 
@@ -71,6 +72,24 @@ public:
         for (std::uint32_t i = 0; i < 2; i++) store(access(ptrOutputFloat, tessInner, intConstant(i)), floatOne);
         emit(spv::OpBranch, afterLevels);
         emit(spv::OpLabel, afterLevels);
+
+        if (quads) {
+            constexpr std::array<std::uint32_t, 4> order{1u, 2u, 0u, 3u};
+            auto index = intConstant(order[0]);
+            for (std::uint32_t i = 1; i < order.size(); ++i) index = result(spv::OpSelect, intType, result(spv::OpIEqual, boolType, invocation, intConstant(i)), intConstant(order[i]), index);
+            store(access(ptrOutputVec4Float, glOut, invocation, intConstant(0)), load(vec4FloatType, access(ptrInputVec4Float, glIn, index, intConstant(0))));
+            for (std::uint32_t i = 0; i < parameters.size(); i++) {
+                if (parameters[i].missing) {
+                    const auto zero = constant(floatType, 0);
+                    store(access(ptrOutputVec4Float, outputs[i], invocation), result(spv::OpCompositeConstruct, vec4FloatType, zero, zero, zero, zero));
+                    continue;
+                }
+                store(access(ptrOutputVec4Float, outputs[i], invocation), load(vec4FloatType, access(ptrInputVec4Float, inputs[i], parameters[i].flat ? intConstant(0) : index)));
+            }
+            emit(spv::OpReturn);
+            emit(spv::OpFunctionEnd);
+            return builder.Finalize();
+        }
 
         std::array<std::uint32_t, 3> positions {};
         for (std::uint32_t i = 0; i < positions.size(); i++) {
@@ -295,7 +314,7 @@ private:
             tessCoord = addInterface(spv::StorageClassInput, vec3FloatType);
             decorate(tessCoord, spv::DecorationBuiltIn, spv::BuiltInTessCoord);
         }
-        glIn = addInterface(spv::StorageClassInput, array(perVertexType, tessControl ? 3u : 4u));
+        glIn = addInterface(spv::StorageClassInput, array(perVertexType, tessControl && !quads ? 3u : 4u));
 
         inputs.resize(parameters.size());
         std::array<std::uint32_t, 32> locations {};
@@ -306,7 +325,7 @@ private:
                 inputs[i] = locations[location];
                 continue;
             }
-            inputs[i] = addInterface(spv::StorageClassInput, array(vec4FloatType, tessControl ? 3u : 4u));
+            inputs[i] = addInterface(spv::StorageClassInput, array(vec4FloatType, tessControl && !quads ? 3u : 4u));
             decorate(inputs[i], spv::DecorationLocation, location);
             locations[location] = inputs[i];
         }
@@ -375,7 +394,7 @@ private:
 
 }
 
-RectListShaders BuildRectListShaders(const RecompileResult& vertex, const RecompileResult& fragment, const SpirvTarget& target) {
+RectListShaders BuildRectListShaders(const RecompileResult& vertex, const RecompileResult& fragment, const SpirvTarget& target, bool quads) {
     require(target.tessellation.has_value(), "tessellation shaders are unavailable");
     require(target.spirvVersion >= 0x00010300u && target.spirvVersion <= 0x00010500u, "unsupported SPIR-V target version");
     require(std::find(target.supportedCapabilities.begin(), target.supportedCapabilities.end(), spv::CapabilityTessellation) != target.supportedCapabilities.end(), "tessellation capability is unavailable");
@@ -396,6 +415,7 @@ RectListShaders BuildRectListShaders(const RecompileResult& vertex, const Recomp
     require(limits.maxPatchSize >= 4 && components <= limits.maxControlPerVertexInputComponents && components <= limits.maxControlPerVertexOutputComponents && components <= limits.maxEvaluationInputComponents && components <= limits.maxEvaluationOutputComponents && limits.maxControlPerPatchOutputComponents >= 6 && components * 4 + 6 <= limits.maxControlTotalOutputComponents, "tessellation interface exceeds device limits");
     const auto faultBinding = RuntimeAbi::BindingNumber(RuntimeAbi::Stage::TessellationControl, RuntimeAbi::Binding::FaultBuffer);
     RectListEmitter control(parameters, spv::ExecutionModelTessellationControl, target.spirvVersion, faultBinding);
+    control.quads = quads;
     RectListEmitter evaluation(parameters, spv::ExecutionModelTessellationEvaluation, target.spirvVersion, faultBinding);
     RectListShaders shaders;
     shaders.control.spirv = control.EmitControl();

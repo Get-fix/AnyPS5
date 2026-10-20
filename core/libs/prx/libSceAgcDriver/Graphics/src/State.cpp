@@ -1021,6 +1021,12 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
             result.rectList = true;
             result.topology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
             break;
+        case 19:
+            Require(result.stages.path == ShaderPath::Vertex, "quad-list requires vertex routing");
+            result.rectList = true;
+            result.quadList = true;
+            result.topology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+            break;
         case 9: result.topology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST; break;
         case 4: result.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
         case 5: result.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN; break;

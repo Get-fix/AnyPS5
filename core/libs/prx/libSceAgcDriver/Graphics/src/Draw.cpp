@@ -636,6 +636,7 @@ bool ValidationKey(const Context& context, std::span<const CompiledShader> shade
     if (keyed) {
         add(state.stages.path);
         add(state.rectList);
+        add(state.quadList);
         add(state.topology);
         add(state.cullMode);
         add(state.blends.size());

@@ -685,7 +685,7 @@ struct RectListShaders {
     RecompileResult evaluation;
 };
 
-[[nodiscard]] RectListShaders BuildRectListShaders(const RecompileResult& vertex, const RecompileResult& fragment, const SpirvTarget& target);
+[[nodiscard]] RectListShaders BuildRectListShaders(const RecompileResult& vertex, const RecompileResult& fragment, const SpirvTarget& target, bool quads = false);
 
 struct GeometryStageLimits {
     std::uint32_t maxGeometryInputComponents;
