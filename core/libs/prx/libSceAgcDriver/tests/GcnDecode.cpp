@@ -77,6 +77,14 @@ void SopkComparesAndAdd() {
     Check(Decode(cmpkLe).op == RdnaOpcode::SCmpLeU32, "s_cmpk_le_u32 did not decode as its RDNA opcode");
 }
 
+void SetregImmKeepsItsLiteral() {
+    const std::array<std::uint32_t, 3> setreg{0xba80f801u, 0x12345678u, 0xbf810000u};
+    const auto instruction = Decode(setreg);
+    Check(instruction.op == RdnaOpcode::SSetregImm32B32, "s_setreg_imm32_b32 did not decode as its RDNA opcode");
+    Check(instruction.wordCount == 2u, "a GCN s_setreg_imm32_b32 is not two words");
+    Check(instruction.source0.value == 0x12345678u, "s_setreg_imm32_b32 lost its literal");
+}
+
 constexpr std::uint32_t Smrd(std::uint32_t opcode, bool immediate, std::uint32_t offset) {
     return (0x18u << 27u) | (opcode << 22u) | (8u << 15u) | (2u << 9u) | (immediate ? 1u << 8u : 0u) | offset;
 }
@@ -106,6 +114,7 @@ int main() {
         MtbufKeepsItsFormat();
         RsqClampIsTagged();
         SopkComparesAndAdd();
+        SetregImmKeepsItsLiteral();
         SmrdLiteralOffset();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
