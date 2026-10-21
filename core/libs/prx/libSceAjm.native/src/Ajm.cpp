@@ -623,9 +623,17 @@ void EmitFrame(Instance& instance, PcmOutputs& outputs, const std::uint8_t* pcm,
     ResamplerProduce(instance, outputs, channels, encoding, sampleBytes);
 }
 
+// A PS4 reports an ATRAC9 stream's bitrate from its superframe: 448-byte superframes of 4 frames of 256
+// samples at 48 kHz gave 168000 (Knowledge is Power: Decades, every run job's format sideband).
+std::uint32_t At9Bitrate(const Instance& instance) {
+    const auto samples = static_cast<std::uint64_t>(instance.info.framesInSuperframe) * static_cast<std::uint64_t>(instance.info.frameSamples);
+    if (samples == 0) return 0;
+    return static_cast<std::uint32_t>(static_cast<std::uint64_t>(instance.info.superframeSize) * 8u * static_cast<std::uint64_t>(instance.info.samplingRate) / samples);
+}
+
 SidebandFormat CurrentFormat(const Instance& instance) {
     switch (instance.codec) {
-    case CODEC_AT9: return {static_cast<std::uint32_t>(instance.info.channels), ChannelMask(static_cast<std::size_t>(instance.info.channels)), static_cast<std::uint32_t>(instance.info.samplingRate), PcmEncoding(instance), 0, 0};
+    case CODEC_AT9: return {static_cast<std::uint32_t>(instance.info.channels), ChannelMask(static_cast<std::size_t>(instance.info.channels)), static_cast<std::uint32_t>(instance.info.samplingRate), PcmEncoding(instance), At9Bitrate(instance), 0};
     case CODEC_MP3: return {instance.mp3Channels, ChannelMask(instance.mp3Channels), instance.mp3SampleRate, PcmEncoding(instance), instance.mp3Bitrate, 0};
     case CODEC_OPUS: return {instance.opusChannels, ChannelMask(instance.opusChannels), instance.opusSampleRate, PcmEncoding(instance), 0, 0};
     case CODEC_M4AAC: return {instance.aacChannels, ChannelMask(instance.aacChannels), instance.aacSampleRate, PcmEncoding(instance), instance.aacBitrate, 0};
@@ -699,11 +707,17 @@ void RunAt9(Instance& instance, const JobHeader& job, const AjmBuffer* inputs, c
         if (segmentEnded()) break;
         if (instance.superframeRemaining == 0) consumed += RiffDataOffset(input.data() + consumed, input.size() - consumed);
         const std::size_t needed = instance.superframeRemaining == 0 ? superframeSize : instance.superframeRemaining;
+        const bool roomForFrame = Resampling(instance) ? pcmOutputs.Room() >= channels * sampleBytes : pcmOutputs.Room() >= frameBytes;
         if (input.size() - consumed < needed) {
             if (input.size() != consumed) result |= AJM_RESULT_PARTIAL_INPUT;
+            // The console reports PARTIAL_INPUT | NOT_ENOUGH_ROOM (0x18) when the input ends on a frame
+            // boundary just as the output fills: every Wwise run job on a PS4 (input and output sized to
+            // the same 4 frames) came back so. Input ending with room left, and resampled runs, are not
+            // measured and stay 0.
+            else if (frames != 0 && !roomForFrame && !Resampling(instance)) result |= AJM_RESULT_PARTIAL_INPUT | AJM_RESULT_NOT_ENOUGH_ROOM;
             break;
         }
-        if (Resampling(instance) ? pcmOutputs.Room() < channels * sampleBytes : pcmOutputs.Room() < frameBytes) {
+        if (!roomForFrame) {
             if (frames == 0 && pcmOutputs.produced == 0) result |= AJM_RESULT_NOT_ENOUGH_ROOM;
             break;
         }
