@@ -34,6 +34,7 @@ constexpr int SCE_AJM_ERROR_INVALID_INSTANCE = static_cast<int>(0x80930003);
 constexpr int SCE_AJM_ERROR_INVALID_BATCH = static_cast<int>(0x80930004);
 constexpr int SCE_AJM_ERROR_INVALID_PARAMETER = static_cast<int>(0x80930005);
 constexpr int SCE_AJM_ERROR_OUT_OF_RESOURCES = static_cast<int>(0x80930007);
+constexpr int SCE_AJM_ERROR_MALFORMED_BATCH = static_cast<int>(0x80930011);
 
 constexpr std::int32_t AJM_RESULT_NOT_INITIALIZED = 0x00000001;
 constexpr std::int32_t AJM_RESULT_INVALID_DATA = 0x00000002;
@@ -1567,6 +1568,122 @@ void Execute(const JobHeader& job, const AjmBuffer* inputs, const AjmBuffer* out
     }
 }
 
+int RegisterBatch(AjmBatchError* error, std::uint32_t* batch) {
+    if (error) std::memset(error, 0, sizeof(*error));
+    const auto id = g_nextBatch.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard lock(g_batchLock);
+        g_batches.insert(id);
+    }
+    *batch = id;
+    return 0;
+}
+
+// The PS4 batch buffer (sceAjmBatchStartBuffer) is not private: the PS4 SDK builds it with inline code
+// in the title, so it has the console's layout, taken from shadPS4's reimplementation of the PS4
+// library. It is a run of chunks, each starting with a 32-bit word that holds the chunk kind in bits
+// 0-5 and a payload in bits 6-25. A job chunk has the instance as payload and, in a second word, the
+// byte count of the chunks after it that describe the job; an inline chunk holds that many bytes of data
+// a job's control buffer may point to. A job's flags chunk has flags bits 32-51 as payload and bits 0-31
+// in its second word; its buffer chunks have a 32-bit size and a 64-bit address.
+enum class ConsoleChunk : std::uint32_t {
+    Job = 0,
+    InputRunBuffer = 1,
+    InputControlBuffer = 2,
+    ControlFlags = 3,
+    RunFlags = 4,
+    ReturnAddress = 6,
+    InlineBuffer = 7,
+    OutputRunBuffer = 17,
+    OutputControlBuffer = 18,
+};
+
+constexpr std::uint32_t CONSOLE_STATISTICS_INSTANCE = 0x80000;
+constexpr std::uint64_t CONSOLE_FLAGS_VERSION_AND_CODEC = 0x7FF;
+
+std::uint8_t* PutConsoleChunk(std::uint8_t* at, ConsoleChunk kind, std::uint32_t payload, std::uint32_t word) {
+    const std::uint32_t words[2] = {static_cast<std::uint32_t>(kind) | ((payload & 0xFFFFFu) << 6), word};
+    std::memcpy(at, words, sizeof(words));
+    return at + sizeof(words);
+}
+
+std::uint8_t* PutConsoleFlags(std::uint8_t* at, ConsoleChunk kind, std::uint64_t flags) {
+    return PutConsoleChunk(at, kind, static_cast<std::uint32_t>(flags >> 32), static_cast<std::uint32_t>(flags));
+}
+
+std::uint8_t* PutConsoleBuffer(std::uint8_t* at, ConsoleChunk kind, const void* address, std::size_t size) {
+    at = PutConsoleChunk(at, kind, 0, static_cast<std::uint32_t>(size));
+    std::memcpy(at, &address, sizeof(address));
+    return at + sizeof(address);
+}
+
+std::uint8_t* BeginConsoleJob(std::uint8_t* job, const void* returnAddress) {
+    std::uint8_t* at = job + 2 * sizeof(std::uint32_t);
+    return returnAddress ? PutConsoleBuffer(at, ConsoleChunk::ReturnAddress, returnAddress, 0) : at;
+}
+
+void* EndConsoleJob(std::uint8_t* job, std::uint8_t* end, std::uint32_t instance) {
+    PutConsoleChunk(job, ConsoleChunk::Job, instance, static_cast<std::uint32_t>(end - job) - 2 * sizeof(std::uint32_t));
+    return end;
+}
+
+// Runs one console job as the job of this file's kind it describes. The return address is only kept by
+// the console for error reports. Returns false for a job whose chunks overrun it or that has no flags.
+bool RunConsoleJob(std::uint32_t instance, const std::uint8_t* at, const std::uint8_t* end) {
+    JobHeader job{};
+    job.instance = instance;
+    std::vector<AjmBuffer> inputs;
+    std::vector<AjmBuffer> outputs;
+    AjmBuffer controlInput{};
+    AjmBuffer controlOutput{};
+    ConsoleChunk flagsKind = ConsoleChunk::Job;
+    while (at < end) {
+        if (end - at < 8) return false;
+        std::uint32_t words[2];
+        std::memcpy(words, at, sizeof(words));
+        const auto kind = static_cast<ConsoleChunk>(words[0] & 0x3Fu);
+        if (kind == ConsoleChunk::ControlFlags || kind == ConsoleChunk::RunFlags) {
+            if (flagsKind != ConsoleChunk::Job) return false;
+            flagsKind = kind;
+            job.flags = (std::uint64_t{(words[0] >> 6) & 0xFFFFFu} << 32) | words[1];
+            at += sizeof(words);
+            continue;
+        }
+        if (kind != ConsoleChunk::InputRunBuffer && kind != ConsoleChunk::InputControlBuffer && kind != ConsoleChunk::ReturnAddress && kind != ConsoleChunk::OutputRunBuffer && kind != ConsoleChunk::OutputControlBuffer) {
+            NotImplemented_nid_no_patch(("sceAjmBatchStartBuffer (job chunk kind " + std::to_string(static_cast<unsigned>(kind)) + ")").c_str());
+        }
+        if (end - at < 16) return false;
+        AjmBuffer buffer{nullptr, words[1]};
+        std::memcpy(&buffer.ptr, at + sizeof(words), sizeof(buffer.ptr));
+        at += 16;
+        if (kind == ConsoleChunk::InputRunBuffer && buffer.size) inputs.push_back(buffer);
+        if (kind == ConsoleChunk::OutputRunBuffer && buffer.ptr && buffer.size) outputs.push_back(buffer);
+        if (kind == ConsoleChunk::InputControlBuffer) controlInput = buffer;
+        if (kind == ConsoleChunk::OutputControlBuffer) controlOutput = buffer;
+    }
+    if (flagsKind == ConsoleChunk::Job) return false;
+    job.sideband = controlOutput.ptr;
+    job.sidebandSize = controlOutput.size;
+    if (instance == CONSOLE_STATISTICS_INSTANCE) {
+        job.kind = JobKind::GetStatistics;
+    } else if (flagsKind == ConsoleChunk::ControlFlags) {
+        constexpr std::uint64_t implemented = CONSOLE_FLAGS_VERSION_AND_CODEC | CONTROL_RESET | CONTROL_INITIALIZE | SIDEBAND_GAPLESS_DECODE;
+        if ((job.flags & ~implemented) != 0) NotImplemented_nid_no_patch("sceAjmBatchStartBuffer (control job flags other than RESET, INITIALIZE and SIDEBAND_GAPLESS_DECODE)");
+        if (!inputs.empty() || !outputs.empty()) NotImplemented_nid_no_patch("sceAjmBatchStartBuffer (control job with run buffers)");
+        job.kind = JobKind::Control;
+        if (controlInput.size) inputs.push_back(controlInput);
+    } else {
+        if (controlInput.size) NotImplemented_nid_no_patch("sceAjmBatchStartBuffer (run job with an input control buffer)");
+        job.kind = JobKind::Run;
+    }
+    job.inputCount = static_cast<std::uint32_t>(inputs.size());
+    job.outputCount = static_cast<std::uint32_t>(outputs.size());
+    AJM_TRACE("[ajm] console job: instance %u, %s flags 0x%llx, %u input and %u output buffers, control input %llu and output %llu bytes\n", instance, flagsKind == ConsoleChunk::ControlFlags ? "control" : "run", static_cast<unsigned long long>(job.flags), job.inputCount, job.outputCount, static_cast<unsigned long long>(controlInput.size), static_cast<unsigned long long>(controlOutput.size));
+    inputs.insert(inputs.end(), outputs.begin(), outputs.end());
+    Execute(job, inputs.data(), inputs.data() + job.inputCount);
+    return true;
+}
+
 }
 
 extern "C" {
@@ -1788,14 +1905,7 @@ int APS5_VABI sceAjmBatchStart(uint32_t context, const AjmBatchInfo* info, int p
         Execute(job, buffers.data(), buffers.data() + job.inputCount);
         cursor += record.bytes;
     }
-    if (error) std::memset(error, 0, sizeof(*error));
-    const auto id = g_nextBatch.fetch_add(1, std::memory_order_relaxed);
-    {
-        std::lock_guard lock(g_batchLock);
-        g_batches.insert(id);
-    }
-    *batch = id;
-    return 0;
+    return RegisterBatch(error, batch);
 }
 
 int APS5_VABI sceAjmBatchWait(uint32_t context, uint32_t batch, uint32_t timeout, AjmBatchError* error) {
@@ -1819,6 +1929,55 @@ int APS5_VABI sceAjmBatchErrorDump(const AjmBatchInfo* info, AjmBatchError* erro
     (void)info;
     if (error) std::memset(error, 0, sizeof(*error));
     return 0;
+}
+
+void* APS5_VABI sceAjmBatchJobControlBufferRa(void* position, uint32_t instance, uint64_t flags, const void* sideband_input, size_t sideband_input_size, void* sideband_output, size_t sideband_output_size, void* return_address) {
+    auto* job = static_cast<std::uint8_t*>(position);
+    auto* at = BeginConsoleJob(job, return_address);
+    at = PutConsoleBuffer(at, ConsoleChunk::InputControlBuffer, sideband_input, sideband_input_size);
+    at = PutConsoleFlags(at, ConsoleChunk::ControlFlags, flags);
+    at = PutConsoleBuffer(at, ConsoleChunk::OutputControlBuffer, sideband_output, sideband_output_size);
+    return EndConsoleJob(job, at, instance);
+}
+
+void* APS5_VABI sceAjmBatchJobRunSplitBufferRa(void* position, uint32_t instance, uint64_t flags, const AjmBuffer* input_buffers, size_t input_buffers_num, const AjmBuffer* output_buffers, size_t output_buffers_num, void* sideband_output, size_t sideband_output_size, void* return_address) {
+    if ((input_buffers_num && !input_buffers) || (output_buffers_num && !output_buffers)) NotImplemented_nid_no_patch("AJM batch job with a null buffer list and a nonzero buffer count");
+    auto* job = static_cast<std::uint8_t*>(position);
+    auto* at = BeginConsoleJob(job, return_address);
+    for (std::size_t index = 0; index < input_buffers_num; ++index) at = PutConsoleBuffer(at, ConsoleChunk::InputRunBuffer, input_buffers[index].ptr, input_buffers[index].size);
+    at = PutConsoleFlags(at, ConsoleChunk::RunFlags, flags);
+    for (std::size_t index = 0; index < output_buffers_num; ++index) at = PutConsoleBuffer(at, ConsoleChunk::OutputRunBuffer, output_buffers[index].ptr, output_buffers[index].size);
+    at = PutConsoleBuffer(at, ConsoleChunk::OutputControlBuffer, sideband_output, sideband_output_size);
+    return EndConsoleJob(job, at, instance);
+}
+
+void* APS5_VABI sceAjmBatchJobRunBufferRa(void* position, uint32_t instance, uint64_t flags, const void* data_input, size_t data_input_size, void* data_output, size_t data_output_size, void* sideband_output, size_t sideband_output_size, void* return_address) {
+    const AjmBuffer input{const_cast<void*>(data_input), data_input_size};
+    const AjmBuffer output{data_output, data_output_size};
+    return sceAjmBatchJobRunSplitBufferRa(position, instance, flags, &input, 1, &output, 1, sideband_output, sideband_output_size, return_address);
+}
+
+int APS5_VABI sceAjmBatchStartBuffer(uint32_t context, const uint8_t* batch, uint32_t batch_size, int priority, AjmBatchError* error, uint32_t* batch_id) {
+    if (!batch_id || (!batch && batch_size)) return SCE_AJM_ERROR_INVALID_PARAMETER;
+    AJM_TRACE("[ajm] batch start buffer: context %u, priority %d, %u bytes\n", context, priority, batch_size);
+    if (batch_size % 8 != 0) return SCE_AJM_ERROR_MALFORMED_BATCH;
+    const std::uint8_t* at = batch;
+    const std::uint8_t* end = batch + batch_size;
+    while (at < end) {
+        if (end - at < 8) return SCE_AJM_ERROR_MALFORMED_BATCH;
+        std::uint32_t words[2];
+        std::memcpy(words, at, sizeof(words));
+        const std::uint8_t* body = at + sizeof(words);
+        if (words[1] > static_cast<std::size_t>(end - body)) return SCE_AJM_ERROR_MALFORMED_BATCH;
+        const auto kind = static_cast<ConsoleChunk>(words[0] & 0x3Fu);
+        if (kind == ConsoleChunk::Job) {
+            if (!RunConsoleJob((words[0] >> 6) & 0xFFFFFu, body, body + words[1])) return SCE_AJM_ERROR_MALFORMED_BATCH;
+        } else if (kind != ConsoleChunk::InlineBuffer) {
+            NotImplemented_nid_no_patch(("sceAjmBatchStartBuffer (batch chunk kind " + std::to_string(static_cast<unsigned>(kind)) + ")").c_str());
+        }
+        at = body + words[1];
+    }
+    return RegisterBatch(error, batch_id);
 }
 
 }
