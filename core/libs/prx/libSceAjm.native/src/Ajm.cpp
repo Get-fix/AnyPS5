@@ -1601,6 +1601,21 @@ enum class ConsoleChunk : std::uint32_t {
 constexpr std::uint32_t CONSOLE_STATISTICS_INSTANCE = 0x80000;
 constexpr std::uint64_t CONSOLE_FLAGS_VERSION_AND_CODEC = 0x7FF;
 
+// The low header word as the PS4's libSceAjm builders write it (a trace of 32 545 batches a Wwise title
+// started on a PS4): bits 0-3 the kind, bit 4 the output direction of a buffer chunk
+// (0x11 output run, 0x12 output control), bits 6-25 the job's instance or the flags' bits 32-51. The
+// builders leave bits 5, 26, 27 and 31 as they were, and a title that reuses its batch memory (Wwise
+// does) carries the previous batch's bytes there: a 6-bit kind read job headers as 16, 32 or 48 and run
+// flags as 20, 36 or 52, and a 26-bit payload read flags bit 52 set.
+ConsoleChunk ConsoleChunkKind(std::uint32_t word) {
+    const std::uint32_t kind = word & 0xFu;
+    return static_cast<ConsoleChunk>(kind == 1 || kind == 2 ? kind | (word & 0x10u) : kind);
+}
+
+std::uint32_t ConsoleChunkPayload(std::uint32_t word) {
+    return (word >> 6) & 0xFFFFFu;
+}
+
 std::uint8_t* PutConsoleChunk(std::uint8_t* at, ConsoleChunk kind, std::uint32_t payload, std::uint32_t word) {
     const std::uint32_t words[2] = {static_cast<std::uint32_t>(kind) | ((payload & 0xFFFFFu) << 6), word};
     std::memcpy(at, words, sizeof(words));
@@ -1641,11 +1656,11 @@ bool RunConsoleJob(std::uint32_t instance, const std::uint8_t* at, const std::ui
         if (end - at < 8) return false;
         std::uint32_t words[2];
         std::memcpy(words, at, sizeof(words));
-        const auto kind = static_cast<ConsoleChunk>(words[0] & 0x3Fu);
+        const auto kind = ConsoleChunkKind(words[0]);
         if (kind == ConsoleChunk::ControlFlags || kind == ConsoleChunk::RunFlags) {
             if (flagsKind != ConsoleChunk::Job) return false;
             flagsKind = kind;
-            job.flags = (std::uint64_t{(words[0] >> 6) & 0xFFFFFu} << 32) | words[1];
+            job.flags = (std::uint64_t{ConsoleChunkPayload(words[0])} << 32) | words[1];
             at += sizeof(words);
             continue;
         }
@@ -1969,9 +1984,9 @@ int APS5_VABI sceAjmBatchStartBuffer(uint32_t context, const uint8_t* batch, uin
         std::memcpy(words, at, sizeof(words));
         const std::uint8_t* body = at + sizeof(words);
         if (words[1] > static_cast<std::size_t>(end - body)) return SCE_AJM_ERROR_MALFORMED_BATCH;
-        const auto kind = static_cast<ConsoleChunk>(words[0] & 0x3Fu);
+        const auto kind = ConsoleChunkKind(words[0]);
         if (kind == ConsoleChunk::Job) {
-            if (!RunConsoleJob((words[0] >> 6) & 0xFFFFFu, body, body + words[1])) return SCE_AJM_ERROR_MALFORMED_BATCH;
+            if (!RunConsoleJob(ConsoleChunkPayload(words[0]), body, body + words[1])) return SCE_AJM_ERROR_MALFORMED_BATCH;
         } else if (kind != ConsoleChunk::InlineBuffer) {
             NotImplemented_nid_no_patch(("sceAjmBatchStartBuffer (batch chunk kind " + std::to_string(static_cast<unsigned>(kind)) + ")").c_str());
         }

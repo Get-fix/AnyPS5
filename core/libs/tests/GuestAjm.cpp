@@ -1774,6 +1774,39 @@ void TestConsoleHandWrittenJobs(std::uint32_t context) {
     Require(sceAjmInstanceDestroy(context, instance) == 0);
 }
 
+// A batch whose headers carry the previous batch's bytes in the bits the console's builders never write
+// (a PS4 trace of Knowledge is Power: Decades, whose Wwise reuses one batch buffer): bit 5 and bits 26,
+// 27 and 31 of a job header, bits 4, 5 and 26 of a flags header, bits 5-31 of a buffer header and bits
+// 4-31 of a return address header. It must run exactly as the clean batch does.
+void TestConsoleStaleHeaderBits(std::uint32_t context) {
+    std::vector<std::uint8_t> stream(1024, 0);
+    std::memcpy(stream.data(), AT9_MONO_SILENT_SUPERFRAME, sizeof(AT9_MONO_SILENT_SUPERFRAME));
+    std::uint32_t instance = 0;
+    Require(sceAjmInstanceCreate(context, 1, 0, &instance) == 0);
+    std::int32_t result[2] = {-1, -1};
+    std::vector<std::int16_t> pcm(1024, 0x55);
+    At9Run decoded{{-1, -1, 0, 0, 0}, 0, 0};
+    const std::uint8_t initialize[8] = {0xFE, 0x70, 0x1F, 0xF0, 0, 0, 0, 0};
+
+    ConsoleBatch batch;
+    batch.Chunk(0x8C000030u, instance, 56);
+    batch.Buffer(0xFFFFFFF6u, &context, 0);
+    batch.Buffer(0xFFFFFFE2u, initialize, sizeof(initialize));
+    batch.Chunk(0x04000033u, 0, 0x6001);
+    batch.Buffer(0xFFFFFFF2u, result, sizeof(result));
+    batch.Chunk(0x8C000020u, instance, 72);
+    batch.Buffer(0xFFFFFFF6u, &context, 0);
+    batch.Buffer(0xFFFFFFE1u, stream.data(), stream.size());
+    batch.Chunk(0x04000034u, 0x8000, 0x1001);
+    batch.Buffer(0xFFFFFFF1u, pcm.data(), pcm.size() * sizeof(std::int16_t));
+    batch.Buffer(0xFFFFFFF2u, &decoded, sizeof(decoded));
+    Require(StartBuffer(context, batch.Data(), batch.Bytes()) == 0);
+    Require(result[0] == 0 && result[1] == 0);
+    Require(decoded.stream.result == 0 && decoded.stream.inputConsumed == 1024 && decoded.stream.outputWritten == 1024 * 2 && decoded.frames == 4);
+    Require(std::all_of(pcm.begin(), pcm.end(), [](std::int16_t sample) { return sample == 0; }));
+    Require(sceAjmInstanceDestroy(context, instance) == 0);
+}
+
 }
 
 int main() {
@@ -1843,5 +1876,6 @@ int main() {
     TestAt9RunDecodesWholeInput(context);
     TestConsoleBufferJobs(context);
     TestConsoleHandWrittenJobs(context);
+    TestConsoleStaleHeaderBits(context);
     Require(sceAjmFinalize(context) == 0);
 }
