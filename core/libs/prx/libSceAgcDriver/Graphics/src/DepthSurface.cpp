@@ -1576,7 +1576,7 @@ bool overlapsStalePlane(std::uint64_t begin, std::uint64_t end) {
 }
 
 bool mirrorable(const DepthTarget& target) {
-    return (target.format == VK_FORMAT_D32_SFLOAT || target.format == VK_FORMAT_D32_SFLOAT_S8_UINT) && target.samples == 1 && target.depthSwizzle == XorSwizzleMode(TextureTileMode::kZ64KBX);
+    return (target.format == VK_FORMAT_D32_SFLOAT || target.format == VK_FORMAT_D32_SFLOAT_S8_UINT) && target.samples == 1 && (target.gcnTileMode.has_value() || target.depthSwizzle == XorSwizzleMode(TextureTileMode::kZ64KBX));
 }
 
 GuestTextureResource mirrorResource(const DepthTarget& target) {
@@ -1586,7 +1586,8 @@ GuestTextureResource mirrorResource(const DepthTarget& target) {
     resource.height = target.extent.height;
     resource.mipCount = 1;
     resource.allocatedMipCount = 1;
-    resource.tileMode = TextureTileMode::kZ64KBX;
+    resource.tileMode = target.gcnTileMode.value_or(TextureTileMode::kZ64KBX);
+    resource.gcnPitch = target.gcnTileMode.has_value() ? target.extent.width : 0u;
     resource.dimension = TextureDimension::k2D;
     resource.format = 22;
     resource.dstSelX = 4;
