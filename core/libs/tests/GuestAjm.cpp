@@ -1475,8 +1475,8 @@ ResampledStream Stream(std::uint32_t context, std::uint32_t instance, const std:
         Require(sceAjmBatchJobDecode(&info, instance, stream + offset, size - offset, pcm.data(), pcm.size() * sizeof(std::int16_t), &sideband) == 0);
         Submit(context, info);
         if (ratio > 0) Require(setResult[0] == 0);
-        // 0x18: the input ended exactly as the output filled (what the console reports for an exact fit)
-        Require(sideband.result == 0 || sideband.result == 0x18 || (offset == size && sideband.outputWritten == 0));
+        // 0x8 / 0x10 / 0x18: which of input and room ran out (what the console reports, see TestAt9FlagRules)
+        Require(sideband.result == 0 || sideband.result == 0x8 || sideband.result == 0x10 || sideband.result == 0x18 || (offset == size && sideband.outputWritten == 0));
         offset += static_cast<std::size_t>(sideband.inputConsumed);
         if (offset < size && static_cast<std::size_t>(sideband.outputWritten) < pcm.size() * sizeof(std::int16_t)) ++out.shortJobs;
         out.pcm.insert(out.pcm.end(), pcm.begin(), pcm.begin() + sideband.outputWritten / static_cast<std::int32_t>(sizeof(std::int16_t)));
@@ -1696,7 +1696,7 @@ At9Run RunAt9Job(std::uint32_t context, std::uint32_t instance, std::uint64_t fl
     const std::size_t sidebandSize = (flags & runMultipleFrames) != 0 ? sizeof(decoded) : sizeof(decoded.stream);
     Require(sceAjmBatchJobRun(&info, instance, sidebandStream | flags, input, inputSize, pcm.data(), pcm.size() * sizeof(std::int16_t), &decoded, sidebandSize) == 0);
     Submit(context, info);
-    Require(decoded.stream.result == 0 || decoded.stream.result == 0x18);   // 0x18: an exact fit, see TestAt9RunDecodesWholeInput
+    Require(decoded.stream.result == 0 || decoded.stream.result == 0x8 || decoded.stream.result == 0x18);   // which side ran out, see TestAt9FlagRules
     return decoded;
 }
 
@@ -1733,6 +1733,47 @@ void TestAt9RunDecodesWholeInput(std::uint32_t context) {
     // 1024 bytes decode into exactly the 1024 samples of room: the console reports PARTIAL_INPUT | NOT_ENOUGH_ROOM
     Require(run.stream.result == 0x18 && static_cast<std::size_t>(run.stream.inputConsumed) == stream.size() && run.stream.outputWritten == 1024 * 2);
     Require(sceAjmInstanceDestroy(context, instance) == 0);
+}
+
+// The result flags say which side ran out, as a PS4 reports them for a title's ATRAC9 stream: the input
+// (PARTIAL_INPUT, even on a superframe boundary) with room left, the room (NOT_ENOUGH_ROOM) with input
+// left after some frames or with a zero room before any, or both at once (0x18).
+void TestAt9FlagRules(std::uint32_t context) {
+    constexpr std::uint64_t runMultipleFrames = 1ull << 12;
+    constexpr std::uint64_t sidebandStream = 1ull << 47;
+    std::vector<std::uint8_t> stream(2048, 0);
+    std::memcpy(stream.data(), AT9_MONO_SILENT_SUPERFRAME, sizeof(AT9_MONO_SILENT_SUPERFRAME));
+    std::memcpy(stream.data() + 1024, AT9_MONO_SILENT_SUPERFRAME, sizeof(AT9_MONO_SILENT_SUPERFRAME));
+    const At9Control start{{0, 0, 0}, {0xFE, 0x70, 0x1F, 0xF0}, 0};
+    const auto run = [&](std::size_t inputSize, std::size_t roomSamples, At9Run& decoded) {
+        std::uint32_t instance = 0;
+        Require(sceAjmInstanceCreate(context, 1, 0, &instance) == 0);
+        std::int32_t result[2] = {-1, -1};
+        RunControl(context, instance, CONTROL_START, &start, sizeof(start), result);
+        Require(result[0] == 0);
+        std::vector<std::uint8_t> batch(4096);
+        std::vector<std::int16_t> pcm(roomSamples + 1);
+        AjmBatchInfo info{};
+        Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+        Require(sceAjmBatchJobRun(&info, instance, sidebandStream | runMultipleFrames, stream.data(), inputSize, pcm.data(), roomSamples * sizeof(std::int16_t), &decoded, sizeof(decoded)) == 0);
+        Submit(context, info);
+        Require(sceAjmInstanceDestroy(context, instance) == 0);
+    };
+    At9Run inputRanOut{{-1, -1, 0, 0, 0}, 0, 0};
+    run(1024, 2048, inputRanOut);
+    Require(inputRanOut.stream.result == 0x8 && inputRanOut.stream.inputConsumed == 1024 && inputRanOut.stream.outputWritten == 1024 * 2 && inputRanOut.frames == 4);
+    At9Run roomRanOut{{-1, -1, 0, 0, 0}, 0, 0};
+    run(2048, 1024, roomRanOut);
+    Require(roomRanOut.stream.result == 0x10 && roomRanOut.stream.inputConsumed == 1024 && roomRanOut.stream.outputWritten == 1024 * 2 && roomRanOut.frames == 4);
+    At9Run halfRoom{{-1, -1, 0, 0, 0}, 0, 0};
+    run(1024, 512, halfRoom);
+    Require(halfRoom.stream.result == 0x10 && halfRoom.stream.inputConsumed > 0 && halfRoom.stream.inputConsumed < 1024 && halfRoom.stream.outputWritten == 512 * 2 && halfRoom.frames == 2);
+    At9Run noRoom{{-1, -1, 0, 0, 0}, 0, 0};
+    run(1024, 0, noRoom);
+    Require(noRoom.stream.result == 0x10 && noRoom.stream.inputConsumed == 0 && noRoom.stream.outputWritten == 0 && noRoom.frames == 0);
+    At9Run both{{-1, -1, 0, 0, 0}, 0, 0};
+    run(1024, 1024, both);
+    Require(both.stream.result == 0x18 && both.stream.inputConsumed == 1024 && both.stream.outputWritten == 1024 * 2 && both.frames == 4);
 }
 
 int StartBuffer(std::uint32_t context, const void* batch, std::size_t size) {
@@ -2153,6 +2194,7 @@ int main() {
     TestResampleAt9(context);
     TestAt9GaplessSegments(context);
     TestAt9RunDecodesWholeInput(context);
+    TestAt9FlagRules(context);
     TestPcmResample(context);
     TestConsoleBufferJobs(context);
     TestConsoleHandWrittenJobs(context);

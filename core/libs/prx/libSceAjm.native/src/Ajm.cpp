@@ -777,17 +777,21 @@ void RunAt9(Instance& instance, const JobHeader& job, const AjmBuffer* inputs, c
         if (instance.superframeRemaining == 0) consumed += RiffDataOffset(input.data() + consumed, input.size() - consumed);
         const std::size_t needed = instance.superframeRemaining == 0 ? superframeSize : instance.superframeRemaining;
         const bool roomForFrame = Resampling(instance) ? pcmOutputs.Room() >= channels * sampleBytes : pcmOutputs.Room() >= frameBytes;
+        // A PS4 reports which side ran out (probe runs of a title's ATRAC9 stream through libSceAjm's
+        // builders): PARTIAL_INPUT when the input ran out, on a superframe boundary or not, with room
+        // left; NOT_ENOUGH_ROOM when the room ran out with input left, after however many frames (and
+        // with none decoded for a zero room); both (0x18) when the input ended just as the output
+        // filled, which is every Wwise run job. A run without input (a format query) reports 0.
+        // Resampled runs were not measured and keep the earlier rule: a trailing partial superframe is
+        // partial input, a zero-output run is out of room.
+        const bool measured = !Resampling(instance);
         if (input.size() - consumed < needed) {
-            if (input.size() != consumed) result |= AJM_RESULT_PARTIAL_INPUT;
-            // The console reports PARTIAL_INPUT | NOT_ENOUGH_ROOM (0x18) when the input ends on a frame
-            // boundary just as the output fills: every Wwise run job on a PS4 (input and output sized to
-            // the same 4 frames) came back so. Input ending with room left, and resampled runs, are not
-            // measured and stay 0.
-            else if (frames != 0 && !roomForFrame && !Resampling(instance)) result |= AJM_RESULT_PARTIAL_INPUT | AJM_RESULT_NOT_ENOUGH_ROOM;
+            if (input.size() != consumed || (measured && !input.empty())) result |= AJM_RESULT_PARTIAL_INPUT;
+            if (measured && !input.empty() && !roomForFrame) result |= AJM_RESULT_NOT_ENOUGH_ROOM;
             break;
         }
         if (!roomForFrame) {
-            if (frames == 0 && pcmOutputs.produced == 0) result |= AJM_RESULT_NOT_ENOUGH_ROOM;
+            if (measured || (frames == 0 && pcmOutputs.produced == 0)) result |= AJM_RESULT_NOT_ENOUGH_ROOM;
             break;
         }
         if (instance.superframeRemaining == 0) {
