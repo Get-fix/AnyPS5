@@ -1764,7 +1764,12 @@ ColorTarget DecodeGcnColorBuffer(const Registers& cx, std::uint32_t slot) {
     Require((info & 0x3u) == 0 && (info & 0x80u) == 0, "endian-swapped or linear-general GCN color targets are not implemented");
     Require((info & 0x8000u) != 0 || number == 7 || number == 4 || number == 5, "unclamped normalized color is unsupported");
     const auto view = read(cx, 0x31b + stride);
-    Require((view & 0x7ffu) == 0 && ((view >> 13u) & 0x7ffu) == 0, "GCN color array slices are not implemented");
+    Require((view & ~0x00ffe7ffu) == 0, "reserved GCN CB_COLOR_VIEW bits are set");
+    const auto slice = view & 0x7ffu;
+    const auto lastSlice = (view >> 13u) & 0x7ffu;
+    Require(lastSlice >= slice, "the GCN color view ends before its first slice");
+    const auto exports = find(cx, 0x207);
+    Require(lastSlice == slice || exports == cx.end() || (exports->second & (1u << 18u)) == 0, "GCN color views that write several array slices are not implemented");
     const auto pitch = ((read(cx, 0x319 + stride) & 0x7ffu) + 1u) * 8u;
     const auto sliceElements = ((read(cx, 0x31a + stride) & 0x3fffffu) + 1u) * 64u;
     color.extent = {pitch, sliceElements / pitch};
@@ -1780,8 +1785,9 @@ ColorTarget DecodeGcnColorBuffer(const Registers& cx, std::uint32_t slot) {
     }
     color.mipCount = 1;
     color.surfaceAddress = static_cast<std::uint64_t>(read(cx, 0x318 + stride)) << 8u;
-    color.address = color.surfaceAddress;
     const ColorTargetLayout layout(color.extent.width, color.extent.height, color.tileMode, color.elementBytes);
+    color.surfaceAddress += static_cast<std::uint64_t>(slice) * layout.Bytes();
+    color.address = color.surfaceAddress;
     Require(layout.Bytes() == static_cast<std::size_t>(pitch) * color.extent.height * color.elementBytes, "PS4 color target pitch or slice is not padded the way its tile mode pads them");
     color.bytes = layout.Bytes();
     color.format = decoded.format;

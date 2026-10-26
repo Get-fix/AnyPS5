@@ -31,6 +31,7 @@
 #include "prx/libc/include/GuestHeap.hpp"
 #include "ImageTableAbi.hpp"
 #include "SpirvBackend/SpirvSpecialization.hpp"
+#include "RdnaDecoder/RdnaInstructionDecoder.hpp"
 #include <spirv/unified1/spirv.hpp>
 #ifdef _WIN32
 #include <windows.h>
@@ -1456,6 +1457,43 @@ void ColorPipeBankXorTests() {
     queue.context[0x31b] = (2u << 26u) | 1u | (1u << 13u);
     const auto mipColor = AgcDriver::Graphics::DecodeColorBuffer(queue.context, 0);
     Require(mipColor.mip == 2 && mipColor.mipCount == 5 && mipColor.extent.width == 64 && mipColor.extent.height == 32 && mipColor.surfaceAddress == mipBase + sliceBytes && mipColor.address == mipBase + sliceBytes + mips[2].tiledOffset && mipColor.mipTail == mips[2].tail && mipColor.pipeBankXor == 0x0200u, "a display XOR color view lost its array slice, mip placement or XOR");
+}
+
+void GcnColorViewSliceTests() {
+    constexpr std::uint32_t side = 64;
+    constexpr std::size_t sliceBytes = side * side * 4u;
+    void* block = GuestHeap::GuestHeapAlignForGpu_nid_postfix(65536, 4u * sliceBytes);
+    const auto base = reinterpret_cast<std::uintptr_t>(block);
+    Require(block != nullptr && (base >> 40u) == 0, "the guest heap returned no block below 1 TiB for the GCN color view test");
+    AgcDriver::Registers cx;
+    cx[0x318] = static_cast<std::uint32_t>(base >> 8u);
+    cx[0x319] = side / 8u - 1u;
+    cx[0x31a] = side * side / 64u - 1u;
+    cx[0x31c] = (10u << 2u) | 0x8000u;
+    cx[0x31d] = 5u;
+    const auto decode = [&cx] { return AgcDriver::Graphics::DecodeColorBuffer(cx, 0); };
+    ShaderRecompiler::SetGcnGuestShaders(true);
+    try {
+        for (const std::uint32_t slice : {0u, 1u, 2u}) {
+            cx[0x31b] = slice | (slice << 13u);
+            const auto color = decode();
+            Require(color.address == base + slice * sliceBytes && color.surfaceAddress == color.address && color.extent.width == side && color.extent.height == side && color.bytes == sliceBytes, "a GCN color view of one slice was not drawn at its slice");
+        }
+        cx[0x31b] = 1u | (3u << 13u);
+        Require(decode().address == base + sliceBytes, "a GCN color view of several slices without a render target index was not drawn at SLICE_START");
+        cx[0x207] = 1u << 18u;
+        expectFailure([&decode] { static_cast<void>(decode()); }, "GCN color views that write several array slices are not implemented");
+        cx[0x31b] = 2u | (1u << 13u);
+        expectFailure([&decode] { static_cast<void>(decode()); }, "the GCN color view ends before its first slice");
+        cx[0x31b] = 1u << 11u;
+        expectFailure([&decode] { static_cast<void>(decode()); }, "reserved GCN CB_COLOR_VIEW bits are set");
+    } catch (...) {
+        ShaderRecompiler::SetGcnGuestShaders(false);
+        GuestHeap::GuestHeapFree_nid_postfix(block);
+        throw;
+    }
+    ShaderRecompiler::SetGcnGuestShaders(false);
+    GuestHeap::GuestHeapFree_nid_postfix(block);
 }
 
 void HiddenUserWordVertexTablesTests() {
@@ -11222,6 +11260,7 @@ int main(int argc, char** argv) {
         PixelInputLayoutTests();
         UnexportedPixelInputTests();
         ColorPipeBankXorTests();
+        GcnColorViewSliceTests();
         HeaderlessVertexStageTests();
         HiddenUserWordVertexTablesTests();
         ComputeScratchTests();
